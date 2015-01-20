@@ -1714,6 +1714,7 @@ void resetServerStats(void) {
     server.stat_numconnections = 0;
     server.stat_expiredkeys = 0;
     server.stat_evictedkeys = 0;
+    server.stat_evictedzsetmembers = 0;
     server.stat_keyspace_misses = 0;
     server.stat_keyspace_hits = 0;
     server.stat_fork_time = 0;
@@ -2833,6 +2834,7 @@ sds genRedisInfoString(char *section) {
             "sync_partial_err:%lld\r\n"
             "expired_keys:%lld\r\n"
             "evicted_keys:%lld\r\n"
+            "evicted_zsetmembers:%lld\r\n"
             "keyspace_hits:%lld\r\n"
             "keyspace_misses:%lld\r\n"
             "pubsub_channels:%ld\r\n"
@@ -2852,6 +2854,7 @@ sds genRedisInfoString(char *section) {
             server.stat_sync_partial_err,
             server.stat_expiredkeys,
             server.stat_evictedkeys,
+            server.stat_evictedzsetmembers,
             server.stat_keyspace_hits,
             server.stat_keyspace_misses,
             dictSize(server.pubsub_channels),
@@ -3232,7 +3235,7 @@ int freeMemoryIfNeeded(void) {
     mem_freed = 0;
     latencyStartMonitor(latency);
     while (mem_freed < mem_tofree) {
-        int j, k, keys_freed = 0;
+        int j, k, items_freed = 0;
 
         for (j = 0; j < server.dbnum; j++) {
             long bestval = 0; /* just to prevent warning */
@@ -3242,7 +3245,9 @@ int freeMemoryIfNeeded(void) {
             dict *dict;
 
             if (server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_LRU ||
-                server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_RANDOM)
+                server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_RANDOM ||
+                server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_LOW_RANK ||
+                server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_HIGH_RANK)
             {
                 dict = server.db[j].dict;
             } else {
@@ -3313,6 +3318,87 @@ int freeMemoryIfNeeded(void) {
                 }
             }
 
+            /* zset-{low,high}-rank */
+            else if (server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_LOW_RANK ||
+                server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_HIGH_RANK)
+            {
+                robj *bestzobj = NULL;
+                double bestscore;
+                sds bestthiskey = NULL;
+
+                for (k = 0; k < server.maxmemory_samples; k++) {
+                    double score;
+
+                    de = dictGetRandomKey(dict);
+                    sds thiskey = dictGetKey(de);
+                    robj *key = createStringObject(thiskey, sdslen(thiskey));
+                    robj *zobj = lookupKey(db,key);
+                    decrRefCount(key);
+
+                    if (zobj->type != REDIS_ZSET) {
+                        continue;
+                    }
+
+                    if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
+                        unsigned int idx = (server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_LOW_RANK) ? 0 : -2;
+                        unsigned char *zl = zobj->ptr;
+                        unsigned char *eptr, *sptr;
+
+                        eptr = ziplistIndex(zl,idx);
+                        sptr = ziplistNext(zl,eptr);
+                        score = zzlGetScore(sptr);
+                    } else if (zobj->encoding == REDIS_ENCODING_SKIPLIST) {
+                        zset *zs = zobj->ptr;
+
+                        if (server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_LOW_RANK) {
+                            score = zs->zsl->header->level[0].forward->score;
+                        } else {
+                            score = zs->zsl->tail->score;
+                        }
+                    } else {
+                        redisPanic("Unknown sorted set encoding");
+                    }
+
+                    if (bestzobj == NULL || (
+                        (server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_LOW_RANK && score < bestscore) ||
+                        (server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_HIGH_RANK && score > bestscore)))
+                    {
+                        bestzobj = zobj;
+                        bestscore = score;
+                        bestthiskey = thiskey;
+                    }
+                }
+
+                if (bestzobj) {
+                    long idx = 1;
+                    long long delta;
+
+                    if (server.maxmemory_policy == REDIS_MAXMEMORY_ZSET_HIGH_RANK) {
+                        idx = zsetLength(bestzobj);
+                    }
+
+                    delta = (long long) zmalloc_used_memory();
+
+                    if (bestzobj->encoding == REDIS_ENCODING_ZIPLIST) {
+                        bestzobj->ptr = zzlDeleteRangeByRank(bestzobj->ptr,idx,idx,NULL);
+                    } else if (bestzobj->encoding == REDIS_ENCODING_SKIPLIST) {
+                        zset *zs = bestzobj->ptr;
+                        zslDeleteRangeByRank(zs->zsl,idx,idx,zs->dict);
+                        if (htNeedsResize(zs->dict)) dictResize(zs->dict);
+                    }
+
+                    delta -= (long long) zmalloc_used_memory();
+                    mem_freed += delta;
+                    items_freed++;
+                    server.stat_evictedzsetmembers++;
+
+                    // If we just emptied the zset, mark it for removal
+                    if (zsetLength(bestzobj) == 0) {
+                        bestkey = bestthiskey;
+                    }
+                }
+            }
+
             /* Finally remove the selected key. */
             if (bestkey) {
                 long long delta;
@@ -3335,7 +3421,7 @@ int freeMemoryIfNeeded(void) {
                 notifyKeyspaceEvent(REDIS_NOTIFY_EVICTED, "evicted",
                     keyobj, db->id);
                 decrRefCount(keyobj);
-                keys_freed++;
+                items_freed++;
 
                 /* When the memory to free starts to be big enough, we may
                  * start spending so much time here that is impossible to
@@ -3344,7 +3430,7 @@ int freeMemoryIfNeeded(void) {
                 if (slaves) flushSlavesOutputBuffers();
             }
         }
-        if (!keys_freed) {
+        if (!items_freed) {
             latencyEndMonitor(latency);
             latencyAddSampleIfNeeded("eviction-cycle",latency);
             return REDIS_ERR; /* nothing to free... */

@@ -237,6 +237,10 @@ void loadServerConfigFromString(char *config) {
                 server.maxmemory_policy = REDIS_MAXMEMORY_ALLKEYS_LRU;
             } else if (!strcasecmp(argv[1],"allkeys-random")) {
                 server.maxmemory_policy = REDIS_MAXMEMORY_ALLKEYS_RANDOM;
+            } else if (!strcasecmp(argv[1],"zset-low-rank")) {
+                server.maxmemory_policy = REDIS_MAXMEMORY_ZSET_LOW_RANK;
+            } else if (!strcasecmp(argv[1],"zset-high-rank")) {
+                server.maxmemory_policy = REDIS_MAXMEMORY_ZSET_HIGH_RANK;
             } else if (!strcasecmp(argv[1],"noeviction")) {
                 server.maxmemory_policy = REDIS_MAXMEMORY_NO_EVICTION;
             } else {
@@ -679,6 +683,10 @@ void configSetCommand(redisClient *c) {
             server.maxmemory_policy = REDIS_MAXMEMORY_ALLKEYS_LRU;
         } else if (!strcasecmp(o->ptr,"allkeys-random")) {
             server.maxmemory_policy = REDIS_MAXMEMORY_ALLKEYS_RANDOM;
+        } else if (!strcasecmp(o->ptr,"zset-low-rank")) {
+            server.maxmemory_policy = REDIS_MAXMEMORY_ZSET_LOW_RANK;
+        } else if (!strcasecmp(o->ptr,"zset-high-rank")) {
+            server.maxmemory_policy = REDIS_MAXMEMORY_ZSET_HIGH_RANK;
         } else if (!strcasecmp(o->ptr,"noeviction")) {
             server.maxmemory_policy = REDIS_MAXMEMORY_NO_EVICTION;
         } else {
@@ -1120,6 +1128,8 @@ void configGetCommand(redisClient *c) {
         case REDIS_MAXMEMORY_VOLATILE_RANDOM: s = "volatile-random"; break;
         case REDIS_MAXMEMORY_ALLKEYS_LRU: s = "allkeys-lru"; break;
         case REDIS_MAXMEMORY_ALLKEYS_RANDOM: s = "allkeys-random"; break;
+        case REDIS_MAXMEMORY_ZSET_LOW_RANK: s = "zset-low-rank"; break;
+        case REDIS_MAXMEMORY_ZSET_HIGH_RANK: s = "zset-high-rank"; break;
         case REDIS_MAXMEMORY_NO_EVICTION: s = "noeviction"; break;
         default: s = "unknown"; break; /* too harmless to panic */
         }
@@ -1828,6 +1838,8 @@ int rewriteConfig(char *path) {
         "volatile-random", REDIS_MAXMEMORY_VOLATILE_RANDOM,
         "allkeys-random", REDIS_MAXMEMORY_ALLKEYS_RANDOM,
         "volatile-ttl", REDIS_MAXMEMORY_VOLATILE_TTL,
+        "zset-low-rank", REDIS_MAXMEMORY_ZSET_LOW_RANK,
+        "zset-high-rank", REDIS_MAXMEMORY_ZSET_HIGH_RANK,
         "noeviction", REDIS_MAXMEMORY_NO_EVICTION,
         NULL, REDIS_DEFAULT_MAXMEMORY_POLICY);
     rewriteConfigNumericalOption(state,"maxmemory-samples",server.maxmemory_samples,REDIS_DEFAULT_MAXMEMORY_SAMPLES);

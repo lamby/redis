@@ -340,7 +340,9 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REDIS_MAXMEMORY_VOLATILE_RANDOM 2
 #define REDIS_MAXMEMORY_ALLKEYS_LRU 3
 #define REDIS_MAXMEMORY_ALLKEYS_RANDOM 4
-#define REDIS_MAXMEMORY_NO_EVICTION 5
+#define REDIS_MAXMEMORY_ZSET_LOW_RANK 5
+#define REDIS_MAXMEMORY_ZSET_HIGH_RANK 6
+#define REDIS_MAXMEMORY_NO_EVICTION 7
 #define REDIS_DEFAULT_MAXMEMORY_POLICY REDIS_MAXMEMORY_NO_EVICTION
 
 /* Scripting */
@@ -699,6 +701,7 @@ struct redisServer {
     long long stat_numconnections;  /* Number of connections received */
     long long stat_expiredkeys;     /* Number of expired keys */
     long long stat_evictedkeys;     /* Number of evicted keys (maxmemory) */
+    long long stat_evictedzsetmembers; /* Number of evicted zset members (zset-low-rank) */
     long long stat_keyspace_hits;   /* Number of successful lookups of keys */
     long long stat_keyspace_misses; /* Number of failed lookups of keys */
     size_t stat_peak_memory;        /* Max used memory record */
@@ -1219,6 +1222,8 @@ void zzlPrev(unsigned char *zl, unsigned char **eptr, unsigned char **sptr);
 unsigned int zsetLength(robj *zobj);
 void zsetConvert(robj *zobj, int encoding);
 unsigned long zslGetRank(zskiplist *zsl, double score, robj *o);
+unsigned char *zzlDeleteRangeByRank(unsigned char *zl, unsigned int start, unsigned int end, unsigned long *deleted);
+unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned int end, dict *dict);
 
 /* Core functions */
 int freeMemoryIfNeeded(void);
